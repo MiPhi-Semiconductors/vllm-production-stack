@@ -235,26 +235,18 @@ spec:
               lmCacheConfig:
                 description: LM Cache configuration
                 properties:
-                  cpuOffloadingBufferSize:
-                    default: 4Gi
-                    description: CPUOffloadingBufferSize is the size of the CPU offloading
-                      buffer
+                  chunkSize:
                     type: string
                   diskOffloadingBufferSize:
-                    default: 8Gi
-                    description: DiskOffloadingBufferSize is the size of the disk
-                      offloading buffer
                     type: string
                   enabled:
                     default: false
                     description: Enabled enables LM Cache
                     type: boolean
-                  remoteSerde:
-                    description: RemoteSerde is the serialization format for the remote
-                      cache
-                    type: string
-                  remoteUrl:
-                    description: RemoteURL is the URL of the remote cache server
+                  localDiskPath:
+                    default: 8Gi
+                    description: DiskOffloadingBufferSize is the size of the disk
+                      offloading buffer
                     type: string
                 type: object
               model:

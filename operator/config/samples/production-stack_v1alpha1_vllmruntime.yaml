@@ -4,22 +4,22 @@ metadata:
   labels:
     app.kubernetes.io/name: production-stack
     app.kubernetes.io/managed-by: kustomize
-    model: Llama-3.1-8B-Instruct
+    model: Llama-3.2-1B-Instruct
   name: vllmruntime-sample
 spec:
   # Model configuration
   model:
-    modelURL: "meta-llama/Llama-3.1-8B-Instruct"
-    enableLoRA: true
+    modelURL: "/data/models/Llama-3.2-1B-Instruct"
+    enableLoRA: false
     enableTool: false
     toolCallParser: ""
-    maxModelLen: 4096
+    maxModelLen: 1024
     dtype: "bfloat16"
     maxNumSeqs: 32
     # HuggingFace token secret (optional)
-    hfTokenSecret:
-      name: "huggingface-token"
-    hfTokenName: "token"
+    # hfTokenSecret:
+    #   name: "huggingface-token"
+    # hfTokenName: "token"
 
   # vLLM server configuration
   vllmConfig:
@@ -27,7 +27,7 @@ spec:
     enableChunkedPrefill: false
     enablePrefixCaching: false
     tensorParallelSize: 1
-    gpuMemoryUtilization: "0.8"
+    gpuMemoryUtilization: "0.9"
     maxLoras: 4
     extraArgs: ["--disable-log-requests"]
     v1: true
@@ -40,10 +40,9 @@ spec:
   # LM Cache configuration
   lmCacheConfig:
     enabled: true
-    cpuOffloadingBufferSize: "15"
-    diskOffloadingBufferSize: "0"
-    remoteUrl: "lm://cacheserver-sample.default.svc.cluster.local:80"
-    remoteSerde: "naive"
+    localDiskPath: "/data/offload_kv"
+    diskOffloadingBufferSize: "5"
+    chunkSize: "256"
 
   # Deployment configuration
   deploymentConfig:
@@ -56,7 +55,7 @@ spec:
     # Image configuration
     image:
       registry: "docker.io"
-      name: "lmcache/vllm-openai:2025-05-27-v1"
+      name: "lmcache/vllm-openai:build-latest"
       pullPolicy: "IfNotPresent"
       pullSecretName: ""
 
@@ -79,10 +78,28 @@ spec:
         memory: "128Mi"
       mountPath: "/data"
 
+    # volumeMounts:
+    # - name: model_dir
+    #   mountPath: "/usr/local/models"
+    # - name: lmcache_offload
+    #   mountPath: "/data"
+    
+    # volumes:
+    # - name: model_dir
+    #   hostPath:
+    #     path: /usr/local/models
+    #     type: Directory
+    # - name: lmcache_offload
+    #   hostPath:
+    #     path: /mnt/nvme0/app_data/
+    #     type: Directory
+
+
   # Storage configuration
   storageConfig:
     enabled: true
-    storageClassName: ""
-    size: "10Gi"
+    storageClassName: standard
+
+    size: "50Gi"
     accessMode: "ReadWriteMany"
     mountPath: "/data"

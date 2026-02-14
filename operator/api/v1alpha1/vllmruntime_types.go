@@ -138,17 +138,21 @@ type LMCacheConfig struct {
 
 	// CPUOffloadingBufferSize is the size of the CPU offloading buffer
 	// +kubebuilder:default="4Gi"
-	CPUOffloadingBufferSize string `json:"cpuOffloadingBufferSize,omitempty"`
+	// CPUOffloadingBufferSize string `json:"cpuOffloadingBufferSize,omitempty"`
 
 	// DiskOffloadingBufferSize is the size of the disk offloading buffer
 	// +kubebuilder:default="8Gi"
+	LocalDiskPath string `json:"localDiskPath,omitempty"`
+	
 	DiskOffloadingBufferSize string `json:"diskOffloadingBufferSize,omitempty"`
+	
+	ChunkSize string `json:"chunkSize,omitempty"`
 
 	// RemoteURL is the URL of the remote cache server
-	RemoteURL string `json:"remoteUrl,omitempty"`
+	// RemoteURL string `json:"remoteUrl,omitempty"`
 
 	// RemoteSerde is the serialization format for the remote cache
-	RemoteSerde string `json:"remoteSerde,omitempty"`
+	// RemoteSerde string `json:"remoteSerde,omitempty"`
 }
 
 // StorageConfig defines the storage configuration

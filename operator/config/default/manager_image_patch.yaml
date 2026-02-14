@@ -8,4 +8,5 @@ spec:
     spec:
       containers:
         - name: manager
-          image: lmcache/production-stack-operator:latest
+          image: lmcache/production-stack-operator:dev
+          imagePullPolicy: IfNotPresent

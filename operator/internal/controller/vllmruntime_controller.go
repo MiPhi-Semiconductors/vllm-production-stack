@@ -511,45 +511,59 @@ func (r *VLLMRuntimeReconciler) deploymentForVLLMRuntime(
 		}
 		args = append(args, "--kv-transfer-config", lmcache_config)
 
-		if vllmRuntime.Spec.LMCacheConfig.CPUOffloadingBufferSize != "" {
-			env = append(env,
-				corev1.EnvVar{
-					Name:  "LMCACHE_LOCAL_CPU",
-					Value: "True",
-				},
-				corev1.EnvVar{
-					Name:  "LMCACHE_MAX_LOCAL_CPU_SIZE",
-					Value: vllmRuntime.Spec.LMCacheConfig.CPUOffloadingBufferSize,
-				},
-			)
-		}
+		// if vllmRuntime.Spec.LMCacheConfig.CPUOffloadingBufferSize != "" {
+		// 	env = append(env,
+		// 		corev1.EnvVar{
+		// 			Name:  "LMCACHE_LOCAL_CPU",
+		// 			Value: "True",
+		// 		},
+		// 		corev1.EnvVar{
+		// 			Name:  "LMCACHE_MAX_LOCAL_CPU_SIZE",
+		// 			Value: vllmRuntime.Spec.LMCacheConfig.CPUOffloadingBufferSize,
+		// 		},
+		// 	)
+		// }
 
-		if vllmRuntime.Spec.LMCacheConfig.DiskOffloadingBufferSize != "" {
+		if vllmRuntime.Spec.LMCacheConfig.LocalDiskPath != "" {
 			env = append(env,
 				corev1.EnvVar{
 					Name:  "LMCACHE_LOCAL_DISK",
-					Value: "True",
-				},
-				corev1.EnvVar{
-					Name:  "LMCACHE_MAX_LOCAL_DISK_SIZE",
-					Value: vllmRuntime.Spec.LMCacheConfig.DiskOffloadingBufferSize,
+					Value: vllmRuntime.Spec.LMCacheConfig.LocalDiskPath,
 				},
 			)
+
+			if vllmRuntime.Spec.LMCacheConfig.DiskOffloadingBufferSize != "" {
+				env = append(env,
+					corev1.EnvVar{
+						Name:  "LMCACHE_MAX_LOCAL_DISK_SIZE",
+						Value: vllmRuntime.Spec.LMCacheConfig.DiskOffloadingBufferSize,
+					},
+				)
+			}
+
+			if vllmRuntime.Spec.LMCacheConfig.ChunkSize != "" {
+				env = append(env,
+					corev1.EnvVar{
+						Name:  "LMCACHE_CHUNK_SIZE",
+						Value: vllmRuntime.Spec.LMCacheConfig.ChunkSize,
+					},
+				)
+			}
 		}
 
-		if vllmRuntime.Spec.LMCacheConfig.RemoteURL != "" {
-			env = append(env,
-				corev1.EnvVar{
-					Name:  "LMCACHE_REMOTE_URL",
-					Value: vllmRuntime.Spec.LMCacheConfig.RemoteURL,
-				},
-				corev1.EnvVar{
-					Name:  "LMCACHE_REMOTE_SERDE",
-					Value: vllmRuntime.Spec.LMCacheConfig.RemoteSerde,
-				},
-			)
-		}
-	}
+	// 	if vllmRuntime.Spec.LMCacheConfig.RemoteURL != "" {
+	// 		env = append(env,
+	// 			corev1.EnvVar{
+	// 				Name:  "LMCACHE_REMOTE_URL",
+	// 				Value: vllmRuntime.Spec.LMCacheConfig.RemoteURL,
+	// 			},
+	// 			corev1.EnvVar{
+	// 				Name:  "LMCACHE_REMOTE_SERDE",
+	// 				Value: vllmRuntime.Spec.LMCacheConfig.RemoteSerde,
+	// 			},
+	// 		)
+	// 	}
+	// }
 
 	// Add user-defined environment variables
 	if vllmRuntime.Spec.VLLMConfig.Env != nil {
@@ -921,32 +935,28 @@ func (r *VLLMRuntimeReconciler) deploymentNeedsUpdate(
 
 	// Extract actual values from environment variables
 	actualEnabled := false
-	actualCPUOffloadingBufferSize := ""
+	actualLocalDiskPath := ""
 	actualDiskOffloadingBufferSize := ""
-	actualRemoteURL := ""
-	actualRemoteSerde := ""
+	actualChunkSize := ""
 
 	for _, env := range actualLMCacheConfig {
 		switch env.Name {
 		case "LMCACHE_USE_EXPERIMENTAL":
 			actualEnabled = env.Value == "True"
-		case "LMCACHE_MAX_LOCAL_CPU_SIZE":
-			actualCPUOffloadingBufferSize = env.Value
+		case "LMCACHE_LOCAL_DISK":
+			actualLocalDiskPath = env.Value
 		case "LMCACHE_MAX_LOCAL_DISK_SIZE":
 			actualDiskOffloadingBufferSize = env.Value
-		case "LMCACHE_REMOTE_URL":
-			actualRemoteURL = env.Value
-		case "LMCACHE_REMOTE_SERDE":
-			actualRemoteSerde = env.Value
+		case "LMCACHE_CHUNK_SIZE":
+			actualChunkSize = env.Value
 		}
 	}
 
 	// Compare specific fields
 	if expectedLMCacheConfig.Enabled != actualEnabled ||
-		expectedLMCacheConfig.CPUOffloadingBufferSize != actualCPUOffloadingBufferSize ||
+		expectedLMCacheConfig.LocalDiskPath != actualLocalDiskPath ||
 		expectedLMCacheConfig.DiskOffloadingBufferSize != actualDiskOffloadingBufferSize ||
-		expectedLMCacheConfig.RemoteURL != actualRemoteURL ||
-		expectedLMCacheConfig.RemoteSerde != actualRemoteSerde {
+		expectedLMCacheConfig.ChunkSize != actualChunkSize {
 		log.Info(
 			"LM Cache configuration mismatch",
 			"expected",

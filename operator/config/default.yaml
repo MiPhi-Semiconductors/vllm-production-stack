@@ -780,17 +780,17 @@ spec:
                 - resources
                 type: object
               lmCacheConfig:
-                description: LM Cache configuration
-                properties:
-                  cpuOffloadingBufferSize:
-                    default: 4Gi
-                    description: CPUOffloadingBufferSize is the size of the CPU offloading
-                      buffer
-                    type: string
                   diskOffloadingBufferSize:
                     default: 8Gi
                     description: DiskOffloadingBufferSize is the size of the disk
                       offloading buffer
+                    type: string
+                  chunkSize:
+                    default: "256"
+                    description: size of kv blocks
+                    type: string
+                  localDiskPath:
+                    description: Path to local disk
                     type: string
                   enabled:
                     default: false
@@ -1516,7 +1516,7 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
-        image: lmcache/production-stack-operator:latest
+        image: lmcache/production-stack-operator:dev
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
