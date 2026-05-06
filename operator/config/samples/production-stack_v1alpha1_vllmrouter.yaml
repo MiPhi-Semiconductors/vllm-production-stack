@@ -20,12 +20,8 @@ spec:
   # k8sLabelSelector: "app=vllmruntime-sample"
 
   # Routing strategy (roundrobin, session, prefixaware, or kvaware)
-<<<<<<< Updated upstream
-  routingLogic: roundrobin
-=======
   routingLogic: kvaware
   sessionKey: "x-user-id"
->>>>>>> Stashed changes
 
   # Engine statistics collection interval
   engineScrapeInterval: 30
