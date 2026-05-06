@@ -66,6 +66,52 @@ spec:
                     - name
                     - registry
                     type: object
+                  keda:
+                    description: KedaConfig defines the KEDA autoscaling configuration
+                    properties:
+                      cooldownPeriod:
+                        default: 360
+                        description: CooldownPeriod is the period to wait after scaling
+                        format: int32
+                        type: integer
+                      enabled:
+                        default: false
+                        description: Enabled enables KEDA autoscaling
+                        type: boolean
+                      maxReplicaCount:
+                        default: 3
+                        description: MaxReplicaCount is the maximum number of replicas
+                        format: int32
+                        type: integer
+                      minReplicaCount:
+                        default: 1
+                        description: MinReplicaCount is the minimum number of replicas
+                        format: int32
+                        type: integer
+                      pollingInterval:
+                        default: 15
+                        description: PollingInterval is the interval to check metrics
+                        format: int32
+                        type: integer
+                      triggers:
+                        description: Triggers defines the KEDA triggers
+                        items:
+                          description: KedaTrigger defines a KEDA trigger
+                          properties:
+                            metadata:
+                              additionalProperties:
+                                type: string
+                              description: Metadata for the trigger
+                              type: object
+                            type:
+                              description: Type of the trigger (e.g., prometheus)
+                              type: string
+                          required:
+                          - metadata
+                          - type
+                          type: object
+                        type: array
+                    type: object
                   nodeSelectorTerms:
                     description: Node selector
                     items:
@@ -287,6 +333,8 @@ spec:
                     default: 8Gi
                     description: DiskOffloadingBufferSize is the size of the disk
                       offloading buffer
+                    type: string
+                  diskOffloadingPath:
                     type: string
                   enabled:
                     default: false

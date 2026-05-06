@@ -25,9 +25,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
@@ -36,6 +39,22 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	productionstackv1alpha1 "production-stack/api/v1alpha1"
+)
+
+// kedaScaledObjectGVK is the GroupVersionKind for KEDA's ScaledObject. We use
+// unstructured.Unstructured so the operator does not need to depend on the
+// KEDA Go module — only the CRD needs to be installed in the cluster.
+var kedaScaledObjectGVK = schema.GroupVersionKind{
+	Group:   "keda.sh",
+	Version: "v1alpha1",
+	Kind:    "ScaledObject",
+}
+
+// componentLabelKey/Value identifies operator-managed runtime objects so a
+// single ServiceMonitor (or other selector-based tooling) can match them.
+const (
+	componentLabelKey            = "production-stack.vllm.ai/component"
+	componentLabelValueRuntime   = "vllmruntime"
 )
 
 // VLLMRuntimeReconciler reconciles a VLLMRuntime object
@@ -51,6 +70,7 @@ type VLLMRuntimeReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -322,6 +342,12 @@ func (r *VLLMRuntimeReconciler) Reconcile(
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Reconcile the KEDA ScaledObject (creates/updates/deletes based on spec).
+	if err := r.reconcileScaledObject(ctx, vllmRuntime); err != nil {
+		log.Error(err, "Failed to reconcile ScaledObject")
+		return ctrl.Result{}, err
+	}
+
 	// Update the status
 	if err := r.updateStatus(ctx, vllmRuntime, found); err != nil {
 		log.Error(err, "Failed to update VLLMRuntime status")
@@ -513,7 +539,7 @@ func (r *VLLMRuntimeReconciler) deploymentForVLLMRuntime(
 			env = append(env,
 				corev1.EnvVar{
 					Name:  "LMCACHE_LOCAL_CPU",
-					Value: "True",
+					Value: "False",
 				},
 				corev1.EnvVar{
 					Name:  "LMCACHE_MAX_LOCAL_CPU_SIZE",
@@ -523,10 +549,15 @@ func (r *VLLMRuntimeReconciler) deploymentForVLLMRuntime(
 		}
 
 		if vllmRuntime.Spec.LMCacheConfig.DiskOffloadingBufferSize != "" {
+			diskPath := vllmRuntime.Spec.LMCacheConfig.DiskOffloadingPath
+
+			if diskPath == "" {
+				diskPath = "True"
+			}
 			env = append(env,
 				corev1.EnvVar{
 					Name:  "LMCACHE_LOCAL_DISK",
-					Value: "True",
+					Value: diskPath,
 				},
 				corev1.EnvVar{
 					Name:  "LMCACHE_MAX_LOCAL_DISK_SIZE",
@@ -728,7 +759,6 @@ func (r *VLLMRuntimeReconciler) deploymentForVLLMRuntime(
 			Namespace: vllmRuntime.Namespace,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &vllmRuntime.Spec.DeploymentConfig.Replicas,
 			Strategy: appsv1.DeploymentStrategy{
 				Type: appsv1.DeploymentStrategyType(
 					vllmRuntime.Spec.DeploymentConfig.DeployStrategy,
@@ -750,6 +780,14 @@ func (r *VLLMRuntimeReconciler) deploymentForVLLMRuntime(
 				},
 			},
 		},
+	}
+
+	// Only set Replicas when KEDA is not managing scaling. When KEDA is enabled
+	// the ScaledObject owns Spec.Replicas via its HPA, and writing it here would
+	// fight the autoscaler on every reconcile.
+	if !vllmRuntime.Spec.DeploymentConfig.Keda.Enabled {
+		replicas := vllmRuntime.Spec.DeploymentConfig.Replicas
+		dep.Spec.Replicas = &replicas
 	}
 
 	// Set the owner reference
@@ -885,9 +923,12 @@ func (r *VLLMRuntimeReconciler) deploymentNeedsUpdate(
 	// Generate the expected deployment
 	expectedDep := r.deploymentForVLLMRuntime(vr)
 
-	// Compare replicas
-	if *dep.Spec.Replicas != vr.Spec.DeploymentConfig.Replicas {
-		return true
+	// Compare replicas. KEDA owns Spec.Replicas when enabled, so skip the check
+	// to avoid triggering an update that would clobber the autoscaler.
+	if !vr.Spec.DeploymentConfig.Keda.Enabled {
+		if dep.Spec.Replicas == nil || *dep.Spec.Replicas != vr.Spec.DeploymentConfig.Replicas {
+			return true
+		}
 	}
 
 	// Compare model URL
@@ -972,8 +1013,15 @@ func (r *VLLMRuntimeReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	actualAdditionalArgs := dep.Spec.Template.Spec.Affinity.NodeAffinity
-	expectedAdditionalArgs := expectedDep.Spec.Template.Spec.Affinity.NodeAffinity
+	// Affinity may be nil on either side when no nodeSelectorTerms are defined,
+	// so dereference safely before comparing.
+	var actualAdditionalArgs, expectedAdditionalArgs *corev1.NodeAffinity
+	if dep.Spec.Template.Spec.Affinity != nil {
+		actualAdditionalArgs = dep.Spec.Template.Spec.Affinity.NodeAffinity
+	}
+	if expectedDep.Spec.Template.Spec.Affinity != nil {
+		expectedAdditionalArgs = expectedDep.Spec.Template.Spec.Affinity.NodeAffinity
+	}
 	if !reflect.DeepEqual(expectedAdditionalArgs, actualAdditionalArgs) {
 		log.Info(
 			"Node affinity mismatch",
@@ -1017,11 +1065,17 @@ func (r *VLLMRuntimeReconciler) updateStatus(
 		// Update the status fields
 		latestVR.Status.LastUpdated = metav1.Now()
 
-		// Update model status based on deployment status
-		if dep.Status.AvailableReplicas == *dep.Spec.Replicas &&
+		// Update model status based on deployment status. When KEDA owns scaling,
+		// Spec.Replicas may be nil until the HPA writes it back, so fall back to
+		// the observed replicas in that case.
+		desiredReplicas := dep.Status.Replicas
+		if dep.Spec.Replicas != nil {
+			desiredReplicas = *dep.Spec.Replicas
+		}
+		if dep.Status.AvailableReplicas == desiredReplicas &&
 			dep.Status.UnavailableReplicas == 0 {
 			latestVR.Status.ModelStatus = "Ready"
-		} else if dep.Status.UpdatedReplicas > 0 && dep.Status.AvailableReplicas != *dep.Spec.Replicas && dep.Status.UnavailableReplicas > 0 {
+		} else if dep.Status.UpdatedReplicas > 0 && dep.Status.AvailableReplicas != desiredReplicas && dep.Status.UnavailableReplicas > 0 {
 			// If we have updated replicas but they're not yet available, mark as updating
 			latestVR.Status.ModelStatus = "Updating"
 		} else if dep.Status.UnavailableReplicas > 0 {
@@ -1038,17 +1092,34 @@ func (r *VLLMRuntimeReconciler) updateStatus(
 func (r *VLLMRuntimeReconciler) serviceForVLLMRuntime(
 	vllmRuntime *productionstackv1alpha1.VLLMRuntime,
 ) *corev1.Service {
+<<<<<<< Updated upstream
 	labels := map[string]string{"app": vllmRuntime.Name}
 	maps.Copy(labels, vllmRuntime.Labels)
+=======
+	// selectorLabels are the pod-matching labels (kept narrow so an existing
+	// Deployment's immutable selector keeps working).
+	selectorLabels := map[string]string{"app": vllmRuntime.Name}
+	maps.Copy(selectorLabels, vllmRuntime.Labels)
+
+	// metaLabels are placed on the Service object itself so a ServiceMonitor
+	// (or any other selector-based tooling) can pick up every operator-managed
+	// runtime via the stable component label.
+	metaLabels := map[string]string{
+		"app":               vllmRuntime.Name,
+		componentLabelKey:   componentLabelValueRuntime,
+	}
+	maps.Copy(metaLabels, vllmRuntime.Labels)
+>>>>>>> Stashed changes
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vllmRuntime.Name,
 			Namespace: vllmRuntime.Namespace,
+			Labels:    metaLabels,
 		},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
-			Selector: labels,
+			Selector: selectorLabels,
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "http",
@@ -1168,6 +1239,124 @@ func (r *VLLMRuntimeReconciler) configMapNeedsUpdate(
 	currentData := vr.Spec.Model.ChatTemplate
 
 	return actualData != currentData
+}
+
+// scaledObjectForVLLMRuntime builds a KEDA ScaledObject targeting the runtime
+// Deployment. Returned as unstructured so we do not pull in the KEDA Go
+// module — only the ScaledObject CRD needs to be present in the cluster.
+func (r *VLLMRuntimeReconciler) scaledObjectForVLLMRuntime(
+	vr *productionstackv1alpha1.VLLMRuntime,
+) *unstructured.Unstructured {
+	keda := vr.Spec.DeploymentConfig.Keda
+
+	triggers := make([]interface{}, 0, len(keda.Triggers))
+	for _, t := range keda.Triggers {
+		metadata := make(map[string]interface{}, len(t.Metadata))
+		for k, v := range t.Metadata {
+			metadata[k] = v
+		}
+		triggers = append(triggers, map[string]interface{}{
+			"type":     t.Type,
+			"metadata": metadata,
+		})
+	}
+
+	spec := map[string]interface{}{
+		"scaleTargetRef": map[string]interface{}{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"name":       vr.Name,
+		},
+		"triggers": triggers,
+	}
+	if keda.MinReplicaCount != nil {
+		spec["minReplicaCount"] = int64(*keda.MinReplicaCount)
+	}
+	if keda.MaxReplicaCount != nil {
+		spec["maxReplicaCount"] = int64(*keda.MaxReplicaCount)
+	}
+	if keda.PollingInterval != nil {
+		spec["pollingInterval"] = int64(*keda.PollingInterval)
+	}
+	if keda.CooldownPeriod != nil {
+		spec["cooldownPeriod"] = int64(*keda.CooldownPeriod)
+	}
+
+	so := &unstructured.Unstructured{}
+	so.SetGroupVersionKind(kedaScaledObjectGVK)
+	so.SetName(vr.Name)
+	so.SetNamespace(vr.Namespace)
+	so.Object["spec"] = spec
+
+	_ = ctrl.SetControllerReference(vr, so, r.Scheme)
+	return so
+}
+
+// scaledObjectNeedsUpdate compares the spec of the live ScaledObject to the
+// desired one and returns true if they differ.
+func (r *VLLMRuntimeReconciler) scaledObjectNeedsUpdate(
+	current, desired *unstructured.Unstructured,
+) bool {
+	currentSpec, _, _ := unstructured.NestedMap(current.Object, "spec")
+	desiredSpec, _, _ := unstructured.NestedMap(desired.Object, "spec")
+	return !reflect.DeepEqual(currentSpec, desiredSpec)
+}
+
+// reconcileScaledObject creates, updates, or deletes the KEDA ScaledObject
+// to match the desired state in DeploymentConfig.Keda.
+func (r *VLLMRuntimeReconciler) reconcileScaledObject(
+	ctx context.Context,
+	vr *productionstackv1alpha1.VLLMRuntime,
+) error {
+	logger := log.FromContext(ctx)
+
+	current := &unstructured.Unstructured{}
+	current.SetGroupVersionKind(kedaScaledObjectGVK)
+	getErr := r.Get(
+		ctx,
+		types.NamespacedName{Name: vr.Name, Namespace: vr.Namespace},
+		current,
+	)
+
+	// KEDA disabled: delete any existing ScaledObject we previously created.
+	// If the KEDA CRD isn't installed at all, treat that as "nothing to do".
+	if !vr.Spec.DeploymentConfig.Keda.Enabled {
+		if errors.IsNotFound(getErr) || meta.IsNoMatchError(getErr) {
+			return nil
+		}
+		if getErr != nil {
+			return getErr
+		}
+		logger.Info("Deleting ScaledObject (KEDA disabled)",
+			"ScaledObject.Namespace", current.GetNamespace(),
+			"ScaledObject.Name", current.GetName())
+		return client.IgnoreNotFound(r.Delete(ctx, current))
+	}
+
+	// KEDA enabled: ensure the ScaledObject exists and matches the spec.
+	if meta.IsNoMatchError(getErr) {
+		return fmt.Errorf("KEDA is enabled in spec but the ScaledObject CRD is not installed in the cluster")
+	}
+	desired := r.scaledObjectForVLLMRuntime(vr)
+
+	if errors.IsNotFound(getErr) {
+		logger.Info("Creating ScaledObject",
+			"ScaledObject.Namespace", desired.GetNamespace(),
+			"ScaledObject.Name", desired.GetName())
+		return r.Create(ctx, desired)
+	}
+	if getErr != nil {
+		return getErr
+	}
+
+	if r.scaledObjectNeedsUpdate(current, desired) {
+		logger.Info("Updating ScaledObject",
+			"ScaledObject.Namespace", desired.GetNamespace(),
+			"ScaledObject.Name", desired.GetName())
+		current.Object["spec"] = desired.Object["spec"]
+		return r.Update(ctx, current)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

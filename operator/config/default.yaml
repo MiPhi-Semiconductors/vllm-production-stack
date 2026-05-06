@@ -1517,7 +1517,7 @@ spec:
         command:
         - /manager
         image: lmcache/production-stack-operator:latest
-        imagePullPolicy: Always
+        imagePullPolicy: Never
         livenessProbe:
           httpGet:
             path: /healthz

@@ -24,11 +24,42 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+// KedaTrigger defines a KEDA trigger
+type KedaTrigger struct {
+	// Type of the trigger (e.g., prometheus)
+	Type string `json:"type"`
+	// Metadata for the trigger
+	Metadata map[string]string `json:"metadata"`
+}
+
+// KedaConfig defines the KEDA autoscaling configuration
+type KedaConfig struct {
+	// Enabled enables KEDA autoscaling
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+	// MinReplicaCount is the minimum number of replicas
+	// +kubebuilder:default=1
+	MinReplicaCount *int32 `json:"minReplicaCount,omitempty"`
+	// MaxReplicaCount is the maximum number of replicas
+	// +kubebuilder:default=3
+	MaxReplicaCount *int32 `json:"maxReplicaCount,omitempty"`
+	// PollingInterval is the interval to check metrics
+	// +kubebuilder:default=15
+	PollingInterval *int32 `json:"pollingInterval,omitempty"`
+	// CooldownPeriod is the period to wait after scaling
+	// +kubebuilder:default=360
+	CooldownPeriod *int32 `json:"cooldownPeriod,omitempty"`
+	// Triggers defines the KEDA triggers
+	Triggers []KedaTrigger `json:"triggers,omitempty"`
+}
+
 // DeploymentConfig defines the deployment configuration
 type DeploymentConfig struct {
 	// Replicas
 	// +kubebuilder:default=1
 	Replicas int32 `json:"replicas,omitempty"`
+
+	Keda KedaConfig `json:"keda,omitempty"`
 
 	// Node selector
 	NodeSelectorTerms []corev1.NodeSelectorTerm `json:"nodeSelectorTerms,omitempty"`
@@ -153,6 +184,8 @@ type LMCacheConfig struct {
 	// DiskOffloadingBufferSize is the size of the disk offloading buffer
 	// +kubebuilder:default="8Gi"
 	DiskOffloadingBufferSize string `json:"diskOffloadingBufferSize,omitempty"`
+
+	DiskOffloadingPath string `json:"diskOffloadingPath,omitempty"`
 
 	// RemoteURL is the URL of the remote cache server
 	RemoteURL string `json:"remoteUrl,omitempty"`
